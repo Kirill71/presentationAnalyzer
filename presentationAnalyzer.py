@@ -1,25 +1,3 @@
-/*
- * Copyright (c) 2022 Kyrylo Zharenkov
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
-    
 #!/usr/bin/env python
 
 import os
@@ -45,14 +23,20 @@ class ConsoleColor:
     UNDERLINE = '\033[4m'
 
 
-def prepare_pptx_data(slide_type):
-    namespaces = {'p': 'http://schemas.openxmlformats.org/presentationml/2006/main',
-                  'a': 'http://schemas.openxmlformats.org/drawingml/2006/main'}
+ooxml_namespaces = {'p': 'http://schemas.openxmlformats.org/presentationml/2006/main',
+                    'a': 'http://schemas.openxmlformats.org/drawingml/2006/main'}
 
+odf_namespaces = {'draw': 'urn:oasis:names:tc:opendocument:xmlns:drawing:1.0',
+                  'style': 'urn:oasis:names:tc:opendocument:xmlns:style:1.0',
+                  'presentation': 'urn:oasis:names:tc:opendocument:xmlns:presentation:1.0'}
+
+
+def prepare_pptx_data(slide_type):
     def get_slide_type(sld_type):
         return {"slides": "p:sld", "slideLayouts": "p:sldLayout", "slideMasters": "p:sldMaster"}[sld_type]
 
-    base_query = f'/{get_slide_type(slide_type)}/p:cSld/p:spTree/p:pic/p:spPr/'
+    xmlSlideType = get_slide_type(slide_type)
+    base_query = f'/{xmlSlideType}/p:cSld/p:spTree/p:pic/p:spPr/'
 
     blipFill = f'{base_query}a:blipFill'
     solidFill = f'{base_query}/a:solidFill'
@@ -61,7 +45,7 @@ def prepare_pptx_data(slide_type):
 
     xpathQueries = [blipFill, solidFill, gradientFill, patternFill]
 
-    return xpathQueries, namespaces
+    return xpathQueries
 
 
 def prepare_odp_data(style_name):
@@ -117,16 +101,14 @@ def get_input_params():
     return (args.input_dir, args.output_dir) if hasValidOutputPath else (args.input_dir, args.input_dir)
 
 
-def prepare_path(path):
-    return path.replace(' ', '\\ ').replace("(", "\\(").replace(
-        ")", "\\)")
-
-
 def unzip(input_dir_path, presentation):
+    prepare_path = lambda path: path.replace(' ', '\\ ').replace("(", "\\(").replace(")", "\\)")
+
     tempDirPath = f'{prepare_path(input_dir_path)}/temp'
     full_presentation_path = f'{prepare_path(input_dir_path)}/{prepare_path(presentation)}'
     unzip_command = f'unzip -q -o {full_presentation_path} -d {tempDirPath}'
     os.system(unzip_command)
+
     return tempDirPath
 
 
@@ -170,17 +152,17 @@ def analyze_pptx_file(result, input_dir_path, presentation):
         for currentSlide in os.listdir(currentPath):
             if not currentSlide.endswith("_rels"):
                 xmlTree = etree.parse(currentSlide)
-                xpathQueries, namespaces = prepare_pptx_data(subDir)
-                if is_xml_contains_xpath_query(xmlTree, xpathQueries, namespaces):
+                xpathQueries = prepare_pptx_data(subDir)
+                if is_xml_contains_xpath_query(xmlTree, xpathQueries, ooxml_namespaces):
                     foundedSlides.add(currentSlide[:currentSlide.find('.')])
 
     save_slides_if_found(presentation, result, input_dir_path, foundedSlides)
 
 
-def check_fills(slide_number, style_name, xml_tree, namespaces, founded_slides):
+def check_xpath(slide_number, style_name, xml_tree, founded_slides):
     xpathQueries = prepare_odp_data(style_name)
 
-    if is_xml_contains_xpath_query(xml_tree, xpathQueries, namespaces):
+    if is_xml_contains_xpath_query(xml_tree, xpathQueries, odf_namespaces):
         founded_slides.add(f'slide {slide_number}')
 
 
@@ -201,28 +183,27 @@ def analyze_odp_file(result, input_dir_path, presentation):
     contentXmlTree = etree.parse(contentPath)
 
     slidesCountXpath = "count(//draw:page)"
-    namespaces = {'draw': 'urn:oasis:names:tc:opendocument:xmlns:drawing:1.0',
-                  'style': 'urn:oasis:names:tc:opendocument:xmlns:style:1.0',
-                  'presentation': 'urn:oasis:names:tc:opendocument:xmlns:presentation:1.0'}
 
-    slidesCount = int(contentXmlTree.xpath(slidesCountXpath, namespaces=namespaces))
+    execute_xpath = lambda xmlTree, xpathQuery: xmlTree.xpath(xpathQuery, namespaces=odf_namespaces)
+
+    slidesCount = int(execute_xpath(contentXmlTree, slidesCountXpath))
     foundedSlides = set()
     for i in range(1, slidesCount + 1):
         framesCountXPath = f'count(//draw:page[{i}]/draw:frame)'
-        framesCount = int(contentXmlTree.xpath(framesCountXPath, namespaces=namespaces))
+        framesCount = int(execute_xpath(contentXmlTree, framesCountXPath))
         for j in range(1, framesCount + 1):
             imagesCountXPath = f'count(//draw:page[{i}]/draw:frame[{j}]/draw:image)'
-            imageCount = int(contentXmlTree.xpath(imagesCountXPath, namespaces=namespaces))
+            imageCount = int(execute_xpath(contentXmlTree, imagesCountXPath))
             if imageCount > 0:
                 graphicStyleNameXPath = f'//draw:page[{i}]/draw:frame[{j}]/@draw:style-name'
-                graphicStyleName = contentXmlTree.xpath(graphicStyleNameXPath, namespaces=namespaces)
+                graphicStyleName = execute_xpath(contentXmlTree, graphicStyleNameXPath)
                 # The presentation namespace uses if file saved to the odp from MS PoverPoint
                 presentationStyleNameXPath = f'//draw:page[{i}]/draw:frame[{j}]/@presentation:style-name'
-                presentationStyleName = contentXmlTree.xpath(presentationStyleNameXPath, namespaces=namespaces)
+                presentationStyleName = execute_xpath(contentXmlTree, presentationStyleNameXPath)
                 if len(graphicStyleName) > 0:
-                    check_fills(i, graphicStyleName[0], contentXmlTree, namespaces, foundedSlides)
+                    check_xpath(i, graphicStyleName[0], contentXmlTree, foundedSlides)
                 elif len(presentationStyleName) > 0:
-                    check_fills(i, presentationStyleName[0], contentXmlTree, namespaces, foundedSlides)
+                    check_xpath(i, presentationStyleName[0], contentXmlTree, foundedSlides)
 
     save_slides_if_found(presentation, result, input_dir_path, foundedSlides)
 
@@ -274,6 +255,7 @@ def main():
     fileCounter = 0
     for presentation in os.listdir(inputDirPath):
         fullPath = f'{inputDirPath}/{presentation}'
+        # check nested directories
         if os.path.isdir(fullPath):
             for presentationFile in os.listdir(fullPath):
                 fileCounter = process_file(fileCounter, presentationFile, fullPath, result)
